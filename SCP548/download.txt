@@ -1,0 +1,3 @@
+# Bulk download data for SCP548
+
+curl.exe "https://singlecell.broadinstitute.org/single_cell/api/v1/bulk_download/generate_curl_config?accessions=SCP548&auth_code=pHDPK5Zl&directory=all&context=study"  -o cfg.txt; curl.exe -K cfg.txt ; if ($?) { rm cfg.txt }

@@ -1,0 +1,236 @@
+---
+title: "Sepsis-MAIC single cell KO using scTenifoldpy, data from Broad Institute Single Cell Portal"
+subtitle: "Dataset: SCP548"
+author: "Nureen Zaki"
+date: "2022-10-19"
+output: 
+  html_document:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+```{r libraries_dirs}
+# Libraries ---------------------------------------------------------------
+library(Matrix) # 1.5-1
+library(tidyverse)
+library(data.table)
+library(DT)
+
+# Python
+library(reticulate)
+use_condaenv('r-reticulate') 
+# make sure .Renviron file is configured: RETICULATE_PYTHON="C:\Users\nuree\anaconda3\envs\r-reticulate\python.exe"
+
+# Directories -------------------------------------------------------------
+wd <- 'C:/Users/nuree/Downloads/INTERN_HOME/sc-KO/sepsis/'
+setwd(wd)
+scdir <- 'SCP548/'
+```
+
+## Resources
+
+-   Original R package [scTenifoldKnk](https://github.com/cailab-tamu/scTenifoldKnk) ([paper](https://doi.org/10.1016/j.patter.2022.100434)) and [scTenifoldNet](https://github.com/cailab-tamu/scTenifoldNet) ([paper](https://doi.org/10.1016/j.patter.2020.100139))
+
+-   Python version [scTenifoldpy](https://github.com/qwerty239qwe/scTenifoldpy)
+
+-   Sepsis-MAIC [list of prioritized genes](https://nureenmz.github.io/Sepsis_MAIC_website/GENES_allsepsis.html)
+
+## Single-cell Data
+
+### About the dataset
+
+The dataset used in this example is [SCP548](https://singlecell.broadinstitute.org/single_cell/study/SCP548). Following is the abstract:
+
+> Dysregulation of the immune response to bacterial infection can lead to sepsis, a condition with high mortality. Multiple whole-blood gene-expression studies have defined sepsis-associated molecular signatures, but have not resolved changes in transcriptional states of specific cell types. Here, we used **single-cell RNA-sequencing** to profile the **blood** of people **with sepsis (n = 29)** across three clinical cohorts with corresponding **controls (n = 36)**. We profiled total peripheral blood mononuclear cells (PBMCs, 106,545 cells) and dendritic cells (19,806 cells) across all subjects and, on the basis of clustering of their gene-expression profiles, defined 16 immune-cell states. We identified a unique CD14+ monocyte state that is expanded in people with sepsis and validated its power in distinguishing these individuals from controls using public transcriptomic data from subjects with different disease etiologies and from multiple geographic locations (18 cohorts, n = 1,467 subjects). We identified a panel of surface markers for isolation and quantification of the monocyte state and characterized its epigenomic and functional phenotypes, and propose a model for its induction from human bone marrow. This study demonstrates the utility of single-cell genomics in discovering disease-associated cytologic signatures and provides insight into the cellular basis of immune dysregulation in bacterial sepsis.
+
+### Load metadata
+
+```{r load_metadata, message=FALSE}
+# Load metadata file
+metadata <- list.files(path = paste0('./', scdir), pattern='.*(meta|design).*\\.(csv|tsv|txt)$')
+
+exp_design <- read.csv(paste0(scdir, metadata), sep = '\t') %>% .[-1,]
+
+# Check groups
+cohort_pt <- exp_design %>% group_by(Cohort) %>% 
+  summarise(pt_id = unique(donor_id), pt_count = table(donor_id))
+
+# Subset metadata by chosen group
+group <- 'ICU-NoSEP'
+control <- 'ICU-SEP'
+exp_design_ori <- exp_design %>% filter(Cohort == group)
+
+# Get name of chosen group
+flename <- unique(exp_design_ori$Cohort)
+```
+
+First the experiment metadata is examined.
+
+There are `r length(unique(cohort_pt$Cohort))` patient cohorts in this dataset: `r unique(cohort_pt$Cohort)`
+
+In this example, only the "`r group`" group will be used for single-cell knockout (**WT** group). The "`r control`" group is designated as the **KO** gene expression control.
+
+The WT group has `r nrow(exp_design_ori)` cells consisting of `r length(unique(exp_design_ori$Cell_Type))` cell types (`r unique(exp_design_ori$Cell_Type)`).
+
+In total, the WT group consists of `r length(unique(exp_design_ori$donor_id))` patients (`r unique(exp_design_ori$donor_id)`).
+
+### Load count data
+
+```{r load_matrix}
+
+# # Load expression matrix
+# # Subset matrix to cells from only 'normal' or 'WT' samples
+# mtx <- list.files(path = paste0('./',scdir), pattern='.*matrix')
+# mtx <- tail(mtx, n=1)
+# 
+# exp_matrix <- fread(paste0(scdir, mtx), 
+#                     select = c('GENE', exp_design_ori$NAME),
+#                     showProgress = TRUE) %>% as.matrix(., rownames=1)
+# 
+# # Save into .RData file
+# save(exp_matrix, file = paste0(scdir, flename, '.RData'))
+# 
+# # Save WT matrix for input into scTenifoldKnk
+# fwrite(as.data.frame(exp_matrix),
+#        file = paste0(scdir, flename, '_matrix.csv'),
+#        quote = FALSE, sep = '\t',
+#      row.names = TRUE, col.names = TRUE)
+
+# OR -- Load a matrix object already processed
+load(paste0(scdir, flename, '.RData'))
+```
+
+The normalized count matrix is then loaded and selected for only the WT group. The matrix is saved in a .csv file for scTenifold input (*or load matrix from an RData file*).
+
+Altogether, there are **`r nrow(exp_matrix)`** unique genes in the WT dataset.
+
+------------------------------------------------------------------------
+
+## Example gene knockout: ALDOA
+
+### On Eddie
+
+The gene knockout step is done in Eddie. Once logged in to Eddie, ssh into the wild west node `ssh node2i15` and set the virtual memory limit to 250GB `ulimit -v 262144000`. Activate the conda environment that has been setup prior to the experiment `source activate ENV`.
+
+> *Note: Job scheduling on Eddie for scTenifold failed due to inability to initialize Ray processes that would allow use of multiple cores within a compute node.*
+
+Copy the count matrix file to Eddie, and run the python script `python scKO_python_2.py PATH/TO/COUNTFILE GENE PATH/TO/OUTPUT`. For this dataset, scTenifold was performed using 10 cores `n_cpus = 10` and the total time taken is \~2 hours.
+
+Outputs are copied to a local computer for further analysis.
+
+> *Note: Total memory used is not logged on this interactive node. 250GB memory should be more than sufficient.*
+
+### On local
+
+```{python imports}
+# see script --> process_knk.py
+import os
+import sys
+import pandas as pd #1.2.5
+import scTenifold as st # 0.1.3
+from objexplore import explore #1.6.3
+
+# Give path to extra scripts
+sys.path.append('C:/Users/nuree/Downloads/INTERN_HOME/sc-KO/sepsis/')
+import sc_plotting # modified script from _plotting.py
+```
+
+Load the python KO outputs and examine outputs:
+
+```{python load_KO_data}
+
+# Load KO data (Eddie) for one gene
+path = 'C:/Users/nuree/Downloads/INTERN_HOME/sc-KO/sepsis/SCP548/'
+file = '2022-10-26_121152_ICU-NoSEP_matrix_ALDOA/'
+knk = st.scTenifoldKnk.load(os.path.join(path, file))
+
+# # Explore knk object on terminal
+# explore(knk)
+
+# Extract from knk object
+td = knk.tensor_dict["WT"]
+tdKO = knk.tensor_dict["KO"]
+dr = knk.d_regulation['d_regulation']
+```
+
+### Network heatmap before KO
+
+The heatmap shows the computed weight-averaged denoised **gene regulatory networks (GRN)** after tensor decomposition before gene KO.
+
+```{python heatmap_td}
+sc_plotting.plot_network_heatmap(td)
+```
+
+### Differential regulation analysis after KO
+
+The differential regulation results shows a weighted list of genes ranked by the regulatory effect predicted for the knockout gene over all the other genes expressed in the cell.
+
+```{python qqplot_dr, eval=FALSE}
+sc_plotting.plot_qqplot(dr)
+```
+
+```{r show_dr}
+
+shorten <- function(x, na.rm = FALSE)(signif(x, digits = 5))
+
+# Convert py object to R df
+dr_R <- py$dr %>% arrange(desc(FC)) %>% select(-c(`Unnamed: 0`)) %>%
+  mutate_if(is.numeric, shorten, na.rm = TRUE)
+
+# Show table of diff-regulated genes after KO
+DT::datatable(
+  data = dr_R,
+  rownames = TRUE,
+  extensions = 'Buttons',
+  options = list(pageLength = 20, # 20 per page
+                   dom = 'Bfrtip',
+                   buttons = c('copy', 'csv', 'print', 'pdf') # Show functional buttons
+    )
+  )
+```
+
+### STRING interaction network
+
+Using [STRING](https://string-db.org/cgi/) on the web page, the interaction enrichment of the top 10 regulated genes (by Fold Change) from the single-cell gene knockout is performed. These genes are `r head(dr_R$Gene, n=10)`.
+
+![Network interaction as indicated by strength of data support](SCP548\2022-11-10_STRING\string_hires_image.png)
+
+![Network interaction as indicated type of interaction evidence](SCP548\2022-11-10_STRING\string_hires_image2.png)
+
+Overall, this network has 10 nodes, 12 edges, and average node degree of 2.4. This protein network has significantly more interactions than expected (PPI enrichment *p-value* \< 7.64e-11) at medium confidence (interaction score \> 0.4) against a whole-genome background.
+
+Functional enrichment of this protein network show significant enrichment (*FDR* ≤ 0.05) in neutrophil aggregation/degranulation, innate immune responses and negative regulation of myd88-dependent TLR signaling pathway, among others.
+
+```{r STRING_funcenr}
+# Load tsv file of STRING functional enrichment
+filepath <- 'SCP548/2022-11-10_STRING/'
+file <- list.files(path = filepath, pattern = '.tsv')
+                   
+str_fx <- fread(paste0(filepath, file)) %>% 
+  arrange(`false discovery rate`) %>% 
+  rowwise() %>%
+  rename(Category = `#category`,
+         Term = `term description`,
+         `Count in network` = `observed gene count`,
+         Strength = strength,
+         FDR = `false discovery rate`,
+         Matches = `matching proteins in your network (labels)`) %>%
+  mutate(Term = paste0(Term, ' (', `term ID`, ')'),
+         `Count in network` = paste0(`Count in network`, ' of ', `background gene count`),
+         Matches = lapply(Matches, function(x)(gsub(',', ', ', x)))) %>%
+  select(-c(`matching proteins in your network (IDs)`, `background gene count`, `term ID`)) 
+
+# Show table
+DT::datatable(
+  data = str_fx,
+    rownames = FALSE,
+    extensions = 'Buttons',
+    options = list(pageLength = 20, # 20 per page
+                   dom = 'Bfrtip',
+                   buttons = c('copy', 'csv', 'print', 'pdf') # Show functional buttons
+    )
+  )
+```
